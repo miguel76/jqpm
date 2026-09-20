@@ -101,6 +101,18 @@ Matched against the package repo's git tags:
 - `jq_modules/` — installed packages, laid out as `jq_modules/owner/repo/repo.jq`
   (gitignore this, like `node_modules/`)
 
+## Testing
+
+```sh
+pip install -r requirements-dev.txt
+pytest
+```
+
+The test suite doesn't touch GitHub or the network: it builds throwaway git
+repos on disk (with real tags) and points jqpm at them via `file://` URLs,
+so it exercises the real `git clone`/`ls-remote`/`checkout` codepath end to
+end without any external test fixtures to host or maintain.
+
 ## What's deliberately left out (v0)
 
 This is intentionally minimal. Not included yet, roughly in order of

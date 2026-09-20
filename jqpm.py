@@ -224,9 +224,11 @@ def install_one(owner, repo, url, spec, lock, locked_entry=None):
         # Reproducible install: reuse the exact commit from the lockfile
         # instead of re-resolving the spec against remote tags.
         ref = locked_entry["commit"]
+        resolved = locked_entry["resolved"]
         print(f"  {owner}/{repo}  (locked @ {ref[:8]})")
     else:
         ref = resolve_spec(url, spec)
+        resolved = ref
         print(f"  {owner}/{repo}  ({spec} -> {ref})")
 
     dest = Path(MODULES_DIR) / owner / repo
@@ -250,7 +252,7 @@ def install_one(owner, repo, url, spec, lock, locked_entry=None):
     lock[f"{owner}/{repo}"] = {
         "source": url,
         "spec": spec,
-        "resolved": ref,
+        "resolved": resolved,
         "commit": commit,
     }
 
@@ -302,23 +304,31 @@ def cmd_init(args):
     print(f"created {MANIFEST}")
 
 
+SSH_SCP_RE = re.compile(r"^[^@/\s]+@[^@/\s]+:")
+
+
 def split_pkg_and_spec(raw):
     """
     'owner/repo'                       -> ('owner/repo', '*')
     'owner/repo@^1.0.0'                -> ('owner/repo', '^1.0.0')
     'https://host/o/r.git'             -> ('https://host/o/r.git', '*')
     'https://host/o/r.git@^1.0.0'      -> ('https://host/o/r.git', '^1.0.0')
+    'git@host:o/r.git'                 -> ('git@host:o/r.git', '*')
+    'git@host:o/r.git@^1.0.0'          -> ('git@host:o/r.git', '^1.0.0')
     A URL's own '://' is protected from being mistaken for the '@' split
-    by only splitting on the LAST '@', and only if what follows it looks
-    like a version spec rather than part of a userinfo@host URL.
+    by only splitting on the LAST '@'. An scp-like ssh URL ('user@host:path')
+    has its own leading '@' that is never a version separator, so that
+    prefix is stripped first and the version split only applies after it.
     """
+    match = SSH_SCP_RE.match(raw)
+    if match:
+        prefix, rest = raw[:match.end()], raw[match.end():]
+        if "@" in rest:
+            path, spec = rest.rsplit("@", 1)
+            return prefix + path, spec
+        return raw, "*"
     if "@" in raw:
         head, spec = raw.rsplit("@", 1)
-        # guard against 'git@host:owner/repo.git' (ssh form) where the
-        # '@' is part of the URL, not a version separator: ssh URLs have
-        # no further '@' after 'git@', so this only misfires if someone
-        # writes 'git@host:owner/repo.git@1.0.0', which is unambiguous
-        # anyway (the LAST '@' is always the version separator here).
         if head == "" or head.endswith(":"):
             return raw, "*"
         return head, spec
