@@ -1,0 +1,9 @@
+{
+  "name": "example-usage",
+  "version": "0.1.0",
+  "description": "Shows how a jqpm project consuming a package looks once installed.",
+  "main": "main.jq",
+  "dependencies": {
+    "yourname/jq-strhelp": "^1.0.0"
+  }
+}
