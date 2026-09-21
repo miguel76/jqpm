@@ -48,6 +48,25 @@ package with local imports is installed under `jq_modules/owner/repo/`
 and used from a different project. jqpm works around this at install time
 by rewriting each local spec into its fully-qualified `owner/repo/...`
 form (still resolved by plain jq via `-L`, no runtime shim needed).
+
+Transitive dependencies
+------------------------
+A package may itself ship a `jqpackage.json` at its root declaring its own
+`dependencies`, using the same manifest format as a project. `jqpm install`
+walks that graph: every dependency of every installed package is fetched
+too, flattened into the same top-level `jq_modules/` (jq's own `import`
+only ever searches one `-L` path, so there's no such thing as a "nested"
+jq_modules -- flattening is required, not a choice).
+
+Conflict resolution, when two packages require different versions of the
+same dependency:
+  - a dependency declared directly in the *project's own* jqpackage.json
+    always wins over any transitively-inferred requirement;
+  - between two transitive requirements, the one resolving to the higher
+    semver tag wins;
+  - a conflict jqpm can't order (an explicit git ref/branch/sha clashing
+    with anything else) is a hard error asking the user to add an explicit
+    top-level dependency to pin it.
 """
 
 import argparse
@@ -283,8 +302,11 @@ def rewrite_local_imports(root_dir, prefix):
 # install
 # --------------------------------------------------------------------------
 
-def install_one(owner, repo, url, spec, lock, locked_entry=None):
-    if locked_entry and locked_entry.get("spec") == spec:
+def install_one(owner, repo, url, spec, locked_entry=None):
+    """Fetch one package into jq_modules/ and return its lock entry
+    (without the "direct"/"requested_by" bookkeeping fields, which the
+    caller fills in)."""
+    if locked_entry and locked_entry.get("source") == url and locked_entry.get("spec") == spec:
         # Reproducible install: reuse the exact commit from the lockfile
         # instead of re-resolving the spec against remote tags.
         ref = locked_entry["commit"]
@@ -314,7 +336,7 @@ def install_one(owner, repo, url, spec, lock, locked_entry=None):
               f"'import \"{owner}/{repo}\"' will fail unless the package "
               f"provides {repo}.jq at its root.", file=sys.stderr)
 
-    lock[f"{owner}/{repo}"] = {
+    return {
         "source": url,
         "spec": spec,
         "resolved": resolved,
@@ -329,6 +351,100 @@ def _default_branch(dest):
     return "HEAD"
 
 
+def _dep_entry(key, value):
+    """Turn one `dependencies` map entry (either manifest form) into
+    (owner, repo, url, spec)."""
+    if isinstance(value, dict):
+        owner, repo, _ = parse_dep_key(key)
+        url, spec = value["url"], value.get("version", "*")
+    else:
+        owner, repo, url = parse_dep_key(key)
+        spec = value
+    return owner, repo, url, spec
+
+
+def _reconcile(key, url, spec, direct, existing, requested_by):
+    """Two different requirements were made for an already-resolved
+    dependency `key`. Return 'keep' (existing wins) or 'replace' (the new
+    request wins and must be (re)installed), or die if the conflict can't
+    be ordered automatically."""
+    if direct:
+        # An explicit top-level dependency always wins over anything
+        # merely inferred transitively.
+        return "replace" if not existing.get("direct") else "keep"
+    if existing.get("direct"):
+        return "keep"
+
+    if existing["source"] != url:
+        die(f"conflicting sources requested for {key}:\n"
+            f"  {existing['requested_by'][-1]} wants {existing['source']}\n"
+            f"  {requested_by} wants {url}\n"
+            f"Add an explicit top-level dependency on {key} in {MANIFEST} "
+            f"to resolve this.")
+
+    new_kind, _ = parse_spec(spec)
+    old_kind, _ = parse_spec(existing["spec"])
+    if new_kind == "ref" or old_kind == "ref":
+        die(f"conflicting versions requested for {key}:\n"
+            f"  {existing['requested_by'][-1]} wants '{existing['spec']}'\n"
+            f"  {requested_by} wants '{spec}'\n"
+            f"Add an explicit top-level dependency on {key} in {MANIFEST} "
+            f"to pin a version.")
+
+    new_ref = resolve_spec(url, spec)
+    new_v, old_v = semver_tuple(new_ref), semver_tuple(existing["resolved"])
+    if new_v is None or old_v is None:
+        die(f"conflicting versions requested for {key}: "
+            f"'{existing['spec']}' (-> {existing['resolved']}) vs "
+            f"'{spec}' (-> {new_ref}); neither pair resolves to a "
+            f"comparable semver tag. Add an explicit top-level dependency "
+            f"on {key} in {MANIFEST} to pin a version.")
+    return "replace" if new_v > old_v else "keep"
+
+
+def install_dependency(owner, repo, url, spec, lock, existing_lock, direct, requested_by,
+                        chain, recurse=True):
+    """Install `owner/repo` -- and, if `recurse`, walk into whatever it
+    (transitively) depends on via its own jqpackage.json -- flattening the
+    whole graph into `lock` / jq_modules/."""
+    key = f"{owner}/{repo}"
+    if key in chain:
+        die(f"dependency cycle detected: {' -> '.join(chain + [key])}")
+
+    existing = lock.get(key)
+    if existing is not None:
+        same_request = existing["source"] == url and existing["spec"] == spec
+        decision = "keep" if same_request else _reconcile(key, url, spec, direct, existing, requested_by)
+        existing["direct"] = existing.get("direct") or direct
+        if requested_by not in existing["requested_by"]:
+            existing["requested_by"].append(requested_by)
+        if decision == "keep":
+            return
+
+    entry = install_one(owner, repo, url, spec, locked_entry=existing_lock.get(key))
+    entry["direct"] = direct or (existing["direct"] if existing else False)
+    entry["requested_by"] = existing["requested_by"] if existing else [requested_by]
+    lock[key] = entry
+
+    if recurse:
+        install_transitive_deps(owner, repo, lock, existing_lock, chain + [key])
+
+
+def install_transitive_deps(owner, repo, lock, existing_lock, chain):
+    """Install whatever `owner/repo`'s own jqpackage.json (if it ships one)
+    declares as dependencies."""
+    sub_manifest = load_json(Path(MODULES_DIR) / owner / repo / MANIFEST)
+    if not sub_manifest:
+        return
+    key = f"{owner}/{repo}"
+    for sub_key, sub_value in sub_manifest.get("dependencies", {}).items():
+        sub_owner, sub_repo, sub_url, sub_spec = _dep_entry(sub_key, sub_value)
+        install_dependency(
+            sub_owner, sub_repo, sub_url, sub_spec, lock, existing_lock,
+            direct=False, requested_by=key, chain=chain,
+        )
+
+
 def cmd_install(args):
     manifest = load_manifest()
     deps = manifest.get("dependencies", {})
@@ -336,18 +452,21 @@ def cmd_install(args):
         print("no dependencies listed in jqpackage.json")
         return
     existing_lock = {} if args.update else load_json(LOCKFILE, {})
-    new_lock = {}
-    print(f"installing {len(deps)} package(s) into {MODULES_DIR}/")
+    lock = {}
+    print(f"installing dependencies into {MODULES_DIR}/ (including transitive ones)")
+    # Install every direct (top-level) dependency first, so an explicit
+    # jqpackage.json pin is always in place before any transitive request
+    # for the same package is seen -- regardless of manifest key order.
+    direct = []
     for key, value in deps.items():
-        if isinstance(value, dict):
-            owner, repo, _ = parse_dep_key(key)
-            url, spec = value["url"], value.get("version", "*")
-        else:
-            owner, repo, url = parse_dep_key(key)
-            spec = value
-        install_one(owner, repo, url, spec, new_lock, locked_entry=existing_lock.get(key))
-    save_json(LOCKFILE, new_lock)
-    print("done.")
+        owner, repo, url, spec = _dep_entry(key, value)
+        install_dependency(owner, repo, url, spec, lock, existing_lock,
+                            direct=True, requested_by="(project)", chain=[], recurse=False)
+        direct.append((owner, repo))
+    for owner, repo in direct:
+        install_transitive_deps(owner, repo, lock, existing_lock, chain=[f"{owner}/{repo}"])
+    save_json(LOCKFILE, lock)
+    print(f"done ({len(lock)} package(s) installed).")
 
 
 # --------------------------------------------------------------------------
@@ -439,7 +558,10 @@ def cmd_list(args):
         print("no packages installed (run `jqpm install`)")
         return
     for key, info in lock.items():
-        print(f"{key}  {info['spec']} -> {info['resolved']} ({info['commit'][:8]})")
+        via = ""
+        if not info.get("direct", True):
+            via = f"  (transitive, via {', '.join(info.get('requested_by', []))})"
+        print(f"{key}  {info['spec']} -> {info['resolved']} ({info['commit'][:8]}){via}")
 
 
 def cmd_run(args):
