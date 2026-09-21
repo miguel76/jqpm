@@ -77,6 +77,46 @@ install` time by rewriting each local spec into its fully-qualified
 `owner/repo/...` form, still plain jq module names resolved via `-L`, no
 runtime loader involved.
 
+### Transitive dependencies
+
+A package can depend on other packages too: just ship a `jqpackage.json`
+at its root declaring its own `dependencies`, same format as a project's
+manifest. `jqpm install` walks that graph automatically — every
+dependency of every installed package is fetched and flattened into the
+consuming project's own `jq_modules/`, right alongside its direct
+dependencies:
+
+```
+jq_modules/
+  acme/
+    mid/       # a direct dependency of your project
+      mid.jq
+      jqpackage.json     # declares acme/base as its own dependency
+    base/      # fetched automatically because mid depends on it
+      base.jq
+```
+
+This has to be a flat layout rather than a nested one, because jq's own
+`import` resolution only ever searches a single `-L` path — there's no
+such thing as a package-scoped `jq_modules` the way there is with, say,
+`node_modules`.
+
+If two packages require different versions of the same dependency, jqpm
+resolves it like this:
+
+- a dependency declared directly in *your* `jqpackage.json` always wins
+  over anything merely inferred transitively;
+- between two transitive requirements, the one resolving to the higher
+  semver tag wins;
+- a conflict jqpm can't order (e.g. two different explicit git refs) is a
+  hard error telling you to add an explicit top-level dependency in your
+  own `jqpackage.json` to pin it.
+
+`jqpackage-lock.json` covers the whole flattened graph, not just your
+direct dependencies, so `jqpm install` (without `--update`) is reproducible
+end to end; `jqpm list` marks which entries are transitive and shows what
+pulled each one in.
+
 ## Usage
 
 ```sh
@@ -153,12 +193,6 @@ likely usefulness:
 - **Integrity checking.** The lockfile records a commit sha (which is
   already tamper-evident for that repo's history) but doesn't verify
   signatures or checksums of the fetched tree.
-- **Transitive dependencies.** If a package itself depends on other
-  packages, there's no manifest-in-package to declare that yet, so nested
-  `jq_modules` resolution isn't handled. jq's own `import` doesn't
-  automatically search nested `jq_modules` either, so this would need
-  either flattening (npm's later strategy) or a package-level manifest
-  jqpm reads recursively.
 - **`jqpm publish`.** Publishing today is just "push a git tag." A
   `publish` command could automate tagging/pushing and maybe validate
   that `repo.jq` exists and parses.
