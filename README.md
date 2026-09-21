@@ -42,12 +42,40 @@ naming rules: `import "owner/repo"` looks for `owner/repo.jq` or
 
 ```
 my-jq-lib/
-  my-jq-lib.jq     # the module's functions, this is what gets imported
+  my-jq-lib.jq     # the entry point, this is what gets imported
   README.md
 ```
 
 Nothing else is required — no manifest inside the package itself. Tag
 releases with semver git tags (`v1.2.0` or `1.2.0`).
+
+### Multi-file packages
+
+The entry file doesn't have to hold all the code. It can `import`/`include`
+other `.jq`/`.json` files shipped in the same repo, directly or indirectly
+(A imports B, B imports C, ...), exactly like Python or JS:
+
+- a spec starting with `./` or `../` is a **local** import — resolved
+  relative to the file that contains it, and installed together with the
+  package;
+- anything else, e.g. `import "owner/repo" as X;`, is **package-manager-mediated**
+  — resolved by jq itself via `-L jq_modules`, same as always.
+
+```
+my-jq-lib/
+  my-jq-lib.jq       # import "./internal/parse" as P; ...
+  internal/
+    parse.jq         # import "./format" as F; ...   (reaches a sibling)
+    format.jq
+```
+
+Plain jq resolves `./`-imports relative to the process's current directory,
+not to the file that contains them — which breaks the moment a package
+with local imports is installed under `jq_modules/owner/repo/` and used
+from a different project's directory. jqpm works around this at `jqpm
+install` time by rewriting each local spec into its fully-qualified
+`owner/repo/...` form, still plain jq module names resolved via `-L`, no
+runtime loader involved.
 
 ## Usage
 

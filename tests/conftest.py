@@ -60,7 +60,9 @@ def make_repo(tmp_path):
         if entry:
             (repo_dir / f"{repo}.jq").write_text(jq_body)
         for fname, content in (extra_files or {}).items():
-            (repo_dir / fname).write_text(content)
+            path = repo_dir / fname
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
         _git(["add", "-A"], cwd=repo_dir)
         _git(["commit", "--quiet", "-m", "initial"], cwd=repo_dir)
         fixture = FixtureRepo(repo_dir)

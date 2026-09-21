@@ -81,6 +81,54 @@ class TestParseSpec:
             jqpm.parse_spec("~nope")
 
 
+class TestRewriteLocalImports:
+    def test_rewrites_direct_and_transitive_relative_imports(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "strhelp.jq").write_text(
+            'import "./helper" as H;\n'
+            'import "./sub/deep" as D;\n'
+        )
+        (tmp_path / "helper.jq").write_text(
+            'import "./sub/deep" as D;\n'  # indirect: sibling reaches into a subdir
+        )
+        (tmp_path / "sub" / "deep.jq").write_text('def deepgreet: "deep";\n')
+
+        jqpm.rewrite_local_imports(tmp_path, "acme/strhelp")
+
+        assert (tmp_path / "strhelp.jq").read_text() == (
+            'import "acme/strhelp/helper" as H;\n'
+            'import "acme/strhelp/sub/deep" as D;\n'
+        )
+        assert (tmp_path / "helper.jq").read_text() == (
+            'import "acme/strhelp/sub/deep" as D;\n'
+        )
+
+    def test_leaves_package_mediated_imports_alone(self, tmp_path):
+        (tmp_path / "strhelp.jq").write_text('import "someother/pkg" as O;\n')
+        jqpm.rewrite_local_imports(tmp_path, "acme/strhelp")
+        assert (tmp_path / "strhelp.jq").read_text() == 'import "someother/pkg" as O;\n'
+
+    def test_rewrites_include_too(self, tmp_path):
+        (tmp_path / "strhelp.jq").write_text('include "./helper";\n')
+        (tmp_path / "helper.jq").write_text('def greet: "hi";\n')
+        jqpm.rewrite_local_imports(tmp_path, "acme/strhelp")
+        assert (tmp_path / "strhelp.jq").read_text() == 'include "acme/strhelp/helper";\n'
+
+    def test_parent_relative_import_from_subdir_stays_in_package(self, tmp_path):
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "helper.jq").write_text('def greet: "hi";\n')
+        (tmp_path / "sub" / "deep.jq").write_text('import "../helper" as H;\n')
+        jqpm.rewrite_local_imports(tmp_path, "acme/strhelp")
+        assert (tmp_path / "sub" / "deep.jq").read_text() == (
+            'import "acme/strhelp/helper" as H;\n'
+        )
+
+    def test_import_escaping_package_root_dies(self, tmp_path):
+        (tmp_path / "strhelp.jq").write_text('import "../outside" as O;\n')
+        with pytest.raises(SystemExit):
+            jqpm.rewrite_local_imports(tmp_path, "acme/strhelp")
+
+
 class TestSplitPkgAndSpec:
     def test_bare_shorthand(self):
         assert jqpm.split_pkg_and_spec("owner/repo") == ("owner/repo", "*")

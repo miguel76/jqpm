@@ -33,11 +33,27 @@ Version specs (matched against git tags, tags may be "v1.2.3" or "1.2.3"):
     "~1.2.3"    latest 1.2.x >= 1.2.3
     "*"         latest tag (or default branch HEAD if no tags)
     "#<ref>"    exact git ref / branch / commit sha
+
+Multi-file packages
+--------------------
+A package's entry file (`<repo>.jq`) may `import`/`include` other `.jq`/
+`.json` files that live in the same repo, exactly like Python or JS: a spec
+starting with `./` or `../` is a *local* import, resolved relative to the
+file that contains it, and is shipped and installed together with the
+package. Anything else (e.g. `import "owner/repo" as X;`) is *package-manager-mediated*: resolved by jq itself via `-L jq_modules`, unchanged.
+
+jq's own `import`/`include` resolve `./` paths relative to the process's
+cwd, not to the file that contains them -- which breaks as soon as a
+package with local imports is installed under `jq_modules/owner/repo/`
+and used from a different project. jqpm works around this at install time
+by rewriting each local spec into its fully-qualified `owner/repo/...`
+form (still resolved by plain jq via `-L`, no runtime shim needed).
 """
 
 import argparse
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -216,6 +232,54 @@ def resolve_spec(url, spec):
 
 
 # --------------------------------------------------------------------------
+# local (relative) imports within a package
+# --------------------------------------------------------------------------
+
+# import "./x" as X;   include "./x";   -- only specs starting with ./ or ../
+# are local; anything else is left alone for jq's own -L search-path lookup.
+LOCAL_IMPORT_RE = re.compile(r'\b(import|include)\b(\s*)"(\.\.?/[^"]*)"')
+
+
+def _resolve_local_spec(file_rel_dir, spec, prefix):
+    """
+    file_rel_dir: POSIX path of the importing file's directory, relative to
+    the package root ("" at the root).
+    spec: the quoted import/include target, e.g. "./helper" or "../x/y".
+    prefix: the package's fully-qualified module path, e.g. "owner/repo".
+    Returns the rewritten, package-manager-resolvable spec.
+    """
+    joined = posixpath.normpath(posixpath.join(file_rel_dir, spec))
+    if joined == ".." or joined.startswith("../"):
+        die(f"local import \"{spec}\" in {prefix}/{file_rel_dir or '.'} "
+            f"escapes the package root")
+    return prefix if joined == "." else f"{prefix}/{joined}"
+
+
+def rewrite_local_imports(root_dir, prefix):
+    """
+    Rewrite every local (./  or ../) import/include spec found in the .jq
+    files under root_dir into its fully-qualified `prefix/...` form, so it
+    resolves the same way regardless of the consuming project's own
+    directory. See the "Multi-file packages" note in the module docstring.
+    """
+    root_dir = Path(root_dir)
+    for path in sorted(root_dir.rglob("*.jq")):
+        rel_dir = path.parent.relative_to(root_dir).as_posix()
+        if rel_dir == ".":
+            rel_dir = ""
+        text = path.read_text()
+
+        def _sub(m, rel_dir=rel_dir):
+            keyword, ws, spec = m.group(1), m.group(2), m.group(3)
+            new_spec = _resolve_local_spec(rel_dir, spec, prefix)
+            return f'{keyword}{ws}"{new_spec}"'
+
+        new_text = LOCAL_IMPORT_RE.sub(_sub, text)
+        if new_text != text:
+            path.write_text(new_text)
+
+
+# --------------------------------------------------------------------------
 # install
 # --------------------------------------------------------------------------
 
@@ -242,6 +306,7 @@ def install_one(owner, repo, url, spec, lock, locked_entry=None):
     run(["git", "-C", str(dest), "checkout", "--quiet", checkout_ref])
     commit = run(["git", "-C", str(dest), "rev-parse", "HEAD"]).stdout.strip()
     run(["rm", "-rf", str(dest / ".git")], capture=True)  # keep installed tree lean
+    rewrite_local_imports(dest, f"{owner}/{repo}")
 
     entry = dest / f"{repo}.jq"
     if not entry.exists():

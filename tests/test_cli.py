@@ -150,6 +150,36 @@ def test_run_executes_jq_with_modules_path(jqpm, make_repo):
     assert result.stdout.strip() == "hi!"
 
 
+def test_multi_file_package_with_transitive_relative_imports(jqpm, make_repo):
+    """A package may be split across several .jq files, importing each other
+    by relative path (directly or indirectly) -- jqpm must make those
+    resolve correctly once installed under jq_modules/, even though jq's own
+    './' resolution is cwd-relative and the consumer's cwd is the *project*
+    root, not the package's own directory."""
+    repo = make_repo(
+        "acme", "strhelp",
+        jq_body='import "./helper" as H;\nimport "./sub/deep" as D;\n'
+                'def shout: H::greet + "-" + D::deepgreet;\n',
+        extra_files={
+            "helper.jq": 'import "./sub/deep" as D;\ndef greet: D::deepgreet;\n',
+            "sub/deep.jq": 'def deepgreet: "deep";\n',
+        },
+        tags=["v1.0.0"],
+    )
+    jqpm("init")
+    jqpm("add", f"{repo}@^1.0.0")
+
+    entry = jqpm.project / "jq_modules" / "acme" / "strhelp" / "strhelp.jq"
+    assert 'import "acme/strhelp/helper" as H;' in entry.read_text()
+    assert 'import "acme/strhelp/sub/deep" as D;' in entry.read_text()
+
+    result = jqpm(
+        "run", "--", "-n", "-r",
+        'import "acme/strhelp" as S; S::shout',
+    )
+    assert result.stdout.strip() == "deep-deep"
+
+
 def test_explicit_url_dependency_form_in_manifest(jqpm, make_repo):
     """jqpackage.json may spell a dependency as {"url": ..., "version": ...}
     instead of the owner/repo shorthand; jqpm must honor that form too."""
