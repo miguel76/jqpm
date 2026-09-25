@@ -222,4 +222,4 @@ likely usefulness:
 
 ## License
 
-Public domain / do whatever you want with it — it's a starting point.
+Released under the [MIT License](LICENSE).
