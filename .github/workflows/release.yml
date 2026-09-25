@@ -1,0 +1,62 @@
+name: Release
+
+# Runs when a GitHub Release is published (e.g. for tag v0.1.0):
+# attaches jqpm.py to the release and publishes the package to PyPI.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Check tag matches __version__
+        run: |
+          version=$(python -c 'import jqpm; print(jqpm.__version__)')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$version" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME does not match jqpm.__version__ $version" >&2
+            exit 1
+          fi
+      - name: Run tests
+        run: |
+          sudo apt-get install -y jq
+          pip install -r requirements-dev.txt
+          pytest
+      - name: Build
+        run: |
+          pip install build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  upload-script:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Attach jqpm.py to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" jqpm.py --clobber
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing, no API token needed
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
