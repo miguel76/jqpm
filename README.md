@@ -24,7 +24,7 @@ of the system is only responsible for *fetching*, not *loading*.
 
 ## Install
 
-Requires Python 3.8+, `git`, and `jq` (1.6+ recommended for reliable
+Requires Python 3.9+, `git`, and `jq` (1.6+ recommended for reliable
 `import`) on your `PATH`.
 
 The easiest way is from PyPI, which puts a `jqpm` command on your `PATH`:
