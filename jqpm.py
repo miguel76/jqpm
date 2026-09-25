@@ -78,6 +78,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+__version__ = "0.1.0"
+
 MANIFEST = "jqpackage.json"
 LOCKFILE = "jqpackage-lock.json"
 MODULES_DIR = "jq_modules"
@@ -579,6 +581,7 @@ def cmd_run(args):
 
 def main():
     parser = argparse.ArgumentParser(prog="jqpm", description="A minimal package manager for jq")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init", help="create a jqpackage.json in the current directory")

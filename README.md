@@ -24,14 +24,34 @@ of the system is only responsible for *fetching*, not *loading*.
 
 ## Install
 
-Requires Python 3.8+, `git`, and `jq` (1.6+ recommended for reliable
-`import`) on your `PATH`. It's a single file, no dependencies:
+Requires Python 3.9+, `git`, and `jq` (1.6+ recommended for reliable
+`import`) on your `PATH`.
+
+The easiest way is from PyPI, which puts a `jqpm` command on your `PATH`:
 
 ```sh
-curl -O https://.../jqpm.py
+pipx install jqpm      # or: uv tool install jqpm
+```
+
+Alternatively, it's a single file with no dependencies, attached to every
+[GitHub release](https://github.com/miguel76/jqpm/releases):
+
+```sh
+curl -fLO https://github.com/miguel76/jqpm/releases/latest/download/jqpm.py
 chmod +x jqpm.py
 # optionally: sudo ln -s $(pwd)/jqpm.py /usr/local/bin/jqpm
 ```
+
+To pin a specific version, replace `latest/download` with
+`download/v0.1.0` (or any other release tag).
+
+## Releasing
+
+1. Bump `__version__` in `jqpm.py` and commit.
+2. Create a GitHub release with a matching tag (e.g. `v0.1.0`).
+
+The [release workflow](.github/workflows/release.yml) then runs the tests,
+attaches `jqpm.py` to the release, and publishes the package to PyPI.
 
 ## Package convention
 
