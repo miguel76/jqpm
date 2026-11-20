@@ -58,6 +58,17 @@ too, flattened into the same top-level `jq_modules/` (jq's own `import`
 only ever searches one `-L` path, so there's no such thing as a "nested"
 jq_modules -- flattening is required, not a choice).
 
+Package commands
+----------------
+A package may also ship commands (e.g. a script using its jq modules): its
+jqpackage.json declares them as `"bin": {"<name>": "<path in the package>"}`
+(or `"bin": "<path>"`, named after the repo). After every install/remove,
+jqpm (re)links them as `jq_modules/.bin/<name>`, and `jqpm exec <name>` runs
+one with `jq_modules/.bin` prepended to PATH and `jq_modules` prepended to
+JQ_LIBRARY_PATH (a convention for tools that run jq on the user's behalf;
+jq itself doesn't read it). A package with no jq entry module (a tool only)
+can declare `"main": null` to skip the missing entry file warning.
+
 Conflict resolution, when two packages require different versions of the
 same dependency:
   - a dependency declared directly in the *project's own* jqpackage.json
@@ -74,6 +85,7 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +95,8 @@ __version__ = "0.1.1"
 MANIFEST = "jqpackage.json"
 LOCKFILE = "jqpackage-lock.json"
 MODULES_DIR = "jq_modules"
+BIN_DIR = ".bin"  # inside MODULES_DIR
+LIBRARY_PATH_VAR = "JQ_LIBRARY_PATH"
 
 # --------------------------------------------------------------------------
 # small helpers
@@ -91,6 +105,10 @@ MODULES_DIR = "jq_modules"
 def die(msg):
     print(f"jqpm: error: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def warn(msg):
+    print(f"    warning: {msg}", file=sys.stderr)
 
 
 def run(cmd, cwd=None, capture=True, check=True):
@@ -333,10 +351,11 @@ def install_one(owner, repo, url, spec, locked_entry=None):
     rewrite_local_imports(dest, f"{owner}/{repo}")
 
     entry = dest / f"{repo}.jq"
-    if not entry.exists():
-        print(f"    warning: expected entry file {entry} not found. "
-              f"'import \"{owner}/{repo}\"' will fail unless the package "
-              f"provides {repo}.jq at its root.", file=sys.stderr)
+    if not entry.exists() and not _declares_no_module(load_json(dest / MANIFEST, {})):
+        warn(f"expected entry file {entry} not found. "
+             f"'import \"{owner}/{repo}\"' will fail unless the package "
+             f"provides {repo}.jq at its root (or declares \"main\": null "
+             f"in its {MANIFEST} if it has no jq module).")
 
     return {
         "source": url,
@@ -344,6 +363,13 @@ def install_one(owner, repo, url, spec, locked_entry=None):
         "resolved": resolved,
         "commit": commit,
     }
+
+
+def _declares_no_module(package_manifest):
+    """A package declaring `"main": null` (or false) in its own manifest has
+    no jq entry module: it only ships e.g. commands."""
+    return isinstance(package_manifest, dict) and "main" in package_manifest \
+        and package_manifest["main"] in (None, False)
 
 
 def _default_branch(dest):
@@ -468,7 +494,69 @@ def cmd_install(args):
     for owner, repo in direct:
         install_transitive_deps(owner, repo, lock, existing_lock, chain=[f"{owner}/{repo}"])
     save_json(LOCKFILE, lock)
+    link_bins(lock)
     print(f"done ({len(lock)} package(s) installed).")
+
+
+# --------------------------------------------------------------------------
+# package commands (jq_modules/.bin)
+# --------------------------------------------------------------------------
+
+BIN_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*$")
+
+
+def package_bins(owner, repo):
+    """The commands declared by an installed package, as {name: relative
+    path}, from the `bin` field of its own jqpackage.json."""
+    manifest = load_json(Path(MODULES_DIR) / owner / repo / MANIFEST, {})
+    bins = manifest.get("bin") if isinstance(manifest, dict) else None
+    if bins is None:
+        return {}
+    if isinstance(bins, str):
+        return {repo: bins}
+    if isinstance(bins, dict) and all(isinstance(v, str) for v in bins.values()):
+        return bins
+    warn(f"{owner}/{repo}: ignoring invalid \"bin\" in its {MANIFEST} "
+         f"(expected a path or an object mapping names to paths)")
+    return {}
+
+
+def link_bins(lock):
+    """(Re)create jq_modules/.bin/ with a relative symlink for every command
+    declared by the installed packages. Direct dependencies are linked first,
+    so that their commands win over transitive ones with the same name.
+    Returns {name: package key}."""
+    bin_dir = Path(MODULES_DIR) / BIN_DIR
+    if bin_dir.exists():
+        shutil.rmtree(bin_dir)
+    providers = {}
+    # sorted() is stable: within each group, the lockfile order is kept
+    for key, info in sorted(lock.items(), key=lambda kv: not kv[1].get("direct")):
+        owner, repo = key.split("/", 1)
+        package_dir = Path(MODULES_DIR) / owner / repo
+        for name, rel_path in package_bins(owner, repo).items():
+            if not BIN_NAME_RE.match(name):
+                warn(f"{key}: ignoring command with invalid name \"{name}\"")
+                continue
+            norm = posixpath.normpath(rel_path)
+            if posixpath.isabs(norm) or norm == ".." or norm.startswith("../"):
+                warn(f"{key}: ignoring command \"{name}\": {rel_path} is outside the package")
+                continue
+            target = package_dir / norm
+            if not target.is_file():
+                warn(f"{key}: ignoring command \"{name}\": {rel_path} not found in the package")
+                continue
+            if name in providers:
+                warn(f"command \"{name}\" is provided by both {providers[name]} "
+                     f"and {key}; using the one from {providers[name]}")
+                continue
+            target.chmod(target.stat().st_mode | 0o111)
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            (bin_dir / name).symlink_to(os.path.relpath(target, bin_dir))
+            providers[name] = key
+    if providers:
+        print(f"linked command(s) in {MODULES_DIR}/{BIN_DIR}/: {', '.join(sorted(providers))}")
+    return providers
 
 
 # --------------------------------------------------------------------------
@@ -552,6 +640,8 @@ def cmd_remove(args):
         print(f"removed {full}")
     save_json(MANIFEST, manifest)
     save_json(LOCKFILE, lock)
+    if Path(MODULES_DIR).exists():
+        link_bins(lock)
 
 
 def cmd_list(args):
@@ -573,6 +663,23 @@ def cmd_run(args):
         jq_args = jq_args[1:]
     cmd = ["jq", "-L", modules_path] + jq_args
     os.execvp("jq", cmd)
+
+
+def cmd_exec(args):
+    modules_path = Path(MODULES_DIR).resolve()
+    bin_dir = modules_path / BIN_DIR
+    command = bin_dir / args.command
+    if "/" in args.command or not command.exists():
+        die(f"no command '{args.command}' in {MODULES_DIR}/{BIN_DIR}/ "
+            f"(is it declared by an installed package? run `jqpm install`)")
+    cmd_args = args.args
+    if cmd_args and cmd_args[0] == "--":
+        cmd_args = cmd_args[1:]
+    env = dict(os.environ)
+    env["PATH"] = os.pathsep.join(p for p in [str(bin_dir), env.get("PATH")] if p)
+    env[LIBRARY_PATH_VAR] = os.pathsep.join(
+        p for p in [str(modules_path), env.get(LIBRARY_PATH_VAR)] if p)
+    os.execve(str(command), [str(command)] + cmd_args, env)
 
 
 # --------------------------------------------------------------------------
@@ -608,6 +715,14 @@ def main():
     p = sub.add_parser("run", help="run jq with -L jq_modules already set, e.g. `jqpm run -- 'import ...'`")
     p.add_argument("jq_args", nargs=argparse.REMAINDER)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser(
+        "exec",
+        help="run a command provided by an installed package, e.g. `jqpm exec some-tool -- args`",
+    )
+    p.add_argument("command")
+    p.add_argument("args", nargs=argparse.REMAINDER)
+    p.set_defaults(func=cmd_exec)
 
     args = parser.parse_args()
     args.func(args)

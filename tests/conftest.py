@@ -48,12 +48,14 @@ def make_repo(tmp_path):
     last-two-path-segments shape jqpm expects for owner/repo.
 
     make_repo("acme", "strhelp", tags=["v1.0.0", "v1.1.0"]) -> FixtureRepo
+    (`extra_files` maps paths to contents; those listed in `executable_files`
+    are committed as executable.)
     (str()'s to its file:// URL, so it drops straight into f-strings; use
     `.tag(...)` to add further tags to the same repo later.)
     """
 
     def _make(owner, repo, jq_body='def hello: "hi";\n', tags=(),
-              entry=True, extra_files=None, branch="main"):
+              entry=True, extra_files=None, executable_files=(), branch="main"):
         repo_dir = tmp_path / "remotes" / owner / repo
         repo_dir.mkdir(parents=True)
         _git(["init", "--quiet", "-b", branch], cwd=repo_dir)
@@ -63,6 +65,8 @@ def make_repo(tmp_path):
             path = repo_dir / fname
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
+            if fname in executable_files:
+                path.chmod(0o755)
         _git(["add", "-A"], cwd=repo_dir)
         _git(["commit", "--quiet", "-m", "initial"], cwd=repo_dir)
         fixture = FixtureRepo(repo_dir)
