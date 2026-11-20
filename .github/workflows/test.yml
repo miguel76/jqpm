@@ -7,12 +7,19 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # oldest and newest Python versions available on the runner
-        python-version: ["3.9", "3.x"]
+        # oldest supported and newest Python versions. setup-python has no
+        # Python 3.9 (end of life since October 2025) for the newer runner
+        # images, so that job runs on the newest image that still has it.
+        include:
+          - python-version: "3.9"
+            os: ubuntu-24.04
+          - python-version: "3.x"
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

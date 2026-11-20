@@ -137,6 +137,43 @@ direct dependencies, so `jqpm install` (without `--update`) is reproducible
 end to end; `jqpm list` marks which entries are transitive and shows what
 pulled each one in.
 
+### Package commands
+
+A package can also ship commands, e.g. a script built around its jq
+modules. It declares them in the `bin` field of its own `jqpackage.json`,
+mapping command names to paths inside the package:
+
+```json
+{
+  "name": "some-tool",
+  "version": "1.0.0",
+  "main": null,
+  "bin": { "some-tool": "bin/some-tool" }
+}
+```
+
+(`"bin": "bin/some-tool"` is a shorthand for a single command named after
+the repo.) After every `jqpm install` / `remove`, jqpm links each declared
+command as `jq_modules/.bin/<name>`, a relative symlink to the file in the
+package, which it makes executable. If two packages declare the same
+command, a direct dependency wins over a transitive one; otherwise the
+first one installed wins, with a warning.
+
+Run them with `jqpm exec`, which puts `jq_modules/.bin` first in `PATH` and
+`jq_modules` first in `JQ_LIBRARY_PATH` (a colon-separated list of jq module
+directories: jq itself doesn't read it, but tools that run jq on your
+behalf can use it as extra `-L` directories, so that the filters they run
+can import your installed packages):
+
+```sh
+jqpm exec some-tool -- --some-option input.json
+```
+
+or directly, as `jq_modules/.bin/some-tool`.
+
+A package with no jq module at all (a tool only) declares `"main": null`,
+so that jqpm doesn't warn about its missing `<repo>.jq` entry file.
+
 ## Usage
 
 ```sh
@@ -164,6 +201,9 @@ jqpm remove someuser/jq-strings
 
 # run jq with -L jq_modules already set, so imports just work
 jqpm run -n 'import "someuser/jq-strings" as S; "hi" | S::upper'
+
+# run a command provided by an installed package (see "Package commands")
+jqpm exec some-tool -- --some-option input.json
 ```
 
 Or skip `jqpm run` entirely and call `jq -L jq_modules ...` yourself —
@@ -188,6 +228,7 @@ Matched against the package repo's git tags:
   reproducible installs — same idea as `package-lock.json`/`Cargo.lock`)
 - `jq_modules/` — installed packages, laid out as `jq_modules/owner/repo/repo.jq`
   (gitignore this, like `node_modules/`)
+- `jq_modules/.bin/` — links to the commands declared by installed packages
 
 ## Testing
 
