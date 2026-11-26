@@ -90,7 +90,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 MANIFEST = "jqpackage.json"
 LOCKFILE = "jqpackage-lock.json"
