@@ -37,6 +37,16 @@ def test_caret_respects_major(make_repo):
     assert jqpm.resolve_spec(url.url, "^1.0.0") == "v1.5.0"
 
 
+def test_caret_on_zero_major_respects_minor(make_repo):
+    url = make_repo("acme", "strhelp", tags=["v0.1.0", "v0.1.4", "v0.2.0", "v1.0.0"])
+    assert jqpm.resolve_spec(url.url, "^0.1.0") == "v0.1.4"
+
+
+def test_caret_on_zero_minor_is_exact(make_repo):
+    url = make_repo("acme", "strhelp", tags=["v0.0.3", "v0.0.4", "v0.1.0"])
+    assert jqpm.resolve_spec(url.url, "^0.0.3") == "v0.0.3"
+
+
 def test_caret_no_match_dies(make_repo):
     url = make_repo("acme", "strhelp", tags=["v1.0.0", "v1.5.0"])
     try:

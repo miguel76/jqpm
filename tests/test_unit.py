@@ -72,6 +72,16 @@ class TestParseSpec:
     def test_bare_word_treated_as_ref(self):
         assert jqpm.parse_spec("some-branch") == ("ref", "some-branch")
 
+    def test_caret_allows(self):
+        allows = jqpm.caret_allows
+        assert allows((1, 2, 3), (1, 9, 0))
+        assert not allows((1, 2, 3), (2, 0, 0))
+        assert not allows((1, 2, 3), (1, 2, 2))
+        assert allows((0, 2, 3), (0, 2, 9))
+        assert not allows((0, 2, 3), (0, 3, 0))
+        assert allows((0, 0, 3), (0, 0, 3))
+        assert not allows((0, 0, 3), (0, 0, 4))
+
     def test_bad_caret_dies(self):
         with pytest.raises(SystemExit):
             jqpm.parse_spec("^not-a-version")
