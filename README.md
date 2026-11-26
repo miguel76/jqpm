@@ -217,6 +217,8 @@ Matched against the package repo's git tags:
 |--------------|-------------------------------------------------|
 | `1.2.3`      | exact tag (`v1.2.3` or `1.2.3`)                  |
 | `^1.2.3`     | latest `1.x.x` >= `1.2.3`                        |
+| `^0.2.3`     | latest `0.2.x` >= `0.2.3` (before 1.0.0, a minor bump may break) |
+| `^0.0.3`     | exactly `0.0.3`                                  |
 | `~1.2.3`     | latest `1.2.x` >= `1.2.3`                        |
 | `*` (default)| latest tag, or default branch `HEAD` if no tags  |
 | `#some-ref`  | exact git ref: branch name, tag, or commit sha   |

@@ -224,6 +224,20 @@ def list_remote_tags(url):
     return tags
 
 
+def caret_allows(base, version):
+    """Whether `version` satisfies `^base`, as in npm: compatible updates keep
+    the leftmost non-zero component of `base` fixed (^1.2.3 is <2.0.0, ^0.2.3
+    is <0.3.0, ^0.0.3 is only 0.0.3), since before 1.0.0 a minor (or, before
+    0.1.0, a patch) increment may be breaking."""
+    if version < base:
+        return False
+    if base[0] > 0:
+        return version[0] == base[0]
+    if base[1] > 0:
+        return version[:2] == base[:2]
+    return version == base
+
+
 def resolve_spec(url, spec):
     """Return a git ref (tag/branch/sha) to check out."""
     kind, value = parse_spec(spec)
@@ -250,8 +264,7 @@ def resolve_spec(url, spec):
 
     if kind == "caret":
         assert isinstance(value, tuple) and len(value) == 3
-        major = value[0]
-        candidates = [(v, t) for v, t in semver_tags if v[0] == major and v >= value]
+        candidates = [(v, t) for v, t in semver_tags if caret_allows(value, v)]
         if not candidates:
             die(f"no tag satisfying ^{'.'.join(map(str, value))} found at {url}")
         return sorted(candidates)[-1][1]
